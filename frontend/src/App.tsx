@@ -171,24 +171,38 @@ function BookingPage() {
   const [selectedMonth, setSelectedMonth] = useState(new Date('2026-03-01T00:00:00.000Z'));
   const [owner, setOwner] = useState<CalendarOwner>(mockOwner);
   const [availableSlots, setAvailableSlots] = useState<Slot[]>(mockSlots[selectedEventTypeId] ?? []);
+  const [bookedSlotIds, setBookedSlotIds] = useState<string[]>(mockBookings.map((booking) => booking.slotId));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
   const selectedEventType = eventTypes.find((eventType) => eventType.id === selectedEventTypeId) ?? eventTypes[0];
+  const slotsForSelectedDate = useMemo(
+    () => (selectedDate ? availableSlots.filter((slot) => dayjs(slot.startsAt).isSame(selectedDate, 'day')) : availableSlots),
+    [availableSlots, selectedDate],
+  );
+  const selectedSlot = slotsForSelectedDate.find((slot) => slot.id === selectedSlotId) ?? null;
+  const selectedSlotPreview = selectedSlot;
 
   useEffect(() => {
     let active = true;
 
     async function load() {
       try {
-        const [ownerData, eventTypesData] = await Promise.all([api.ownerProfile(), api.publicEventTypes()]);
+        const [ownerData, eventTypesData, bookingsData] = await Promise.all([
+          api.ownerProfile(),
+          api.publicEventTypes(),
+          api.ownerBookings(),
+        ]);
         if (!active) return;
         setOwner(ownerData);
         setEventTypes(eventTypesData);
+        setBookedSlotIds(bookingsData.map((booking) => booking.slotId));
         setSelectedEventTypeId((current) => current || eventTypesData[0]?.id || '');
       } catch {
         setOwner(mockOwner);
         setEventTypes(mockEventTypes);
+        setBookedSlotIds(mockBookings.map((booking) => booking.slotId));
       }
     }
 
@@ -220,10 +234,32 @@ function BookingPage() {
     };
   }, [selectedEventTypeId]);
 
-  const visibleSlots = useMemo(
-    () => (selectedDate ? availableSlots.filter((slot) => dayjs(slot.startsAt).isSame(selectedDate, 'day')) : availableSlots),
-    [availableSlots, selectedDate],
-  );
+  useEffect(() => {
+    setSelectedSlotId('');
+  }, [selectedDate]);
+
+  async function handleContinue() {
+    if (!selectedEventTypeId || !selectedSlot) return;
+
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      await api.publicCreateBooking({
+        eventTypeId: selectedEventTypeId,
+        slotId: selectedSlot.id,
+        startsAt: selectedSlot.startsAt,
+      });
+      setBookedSlotIds((current) => (current.includes(selectedSlot.id) ? current : [...current, selectedSlot.id]));
+      setSelectedSlotId('');
+      setSuccess('Бронирование создано');
+    } catch {
+      setError('Не удалось создать бронирование');
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <Container size="xl" py="xl">
@@ -236,7 +272,7 @@ function BookingPage() {
             <Group align="flex-start" justify="space-between" mb="md">
               <Group align="center">
                 <Avatar radius="xl" size={64} color="teal">
-                  {owner.displayName[0]}
+                  {owner.displayName?.[0] ?? '?'}
                 </Avatar>
                 <Stack gap={0}>
                   <Text fw={700} fz="lg">
@@ -285,7 +321,7 @@ function BookingPage() {
                 <Text c="dimmed" fz="sm">
                   Выбранное время
                 </Text>
-                <Text fw={600}>{selectedSlotId ? formatRange(availableSlots.find((slot) => slot.id === selectedSlotId) ?? availableSlots[0]!) : 'Время не выбрано'}</Text>
+                <Text fw={600}>{selectedSlotPreview ? formatRange(selectedSlotPreview) : 'Время не выбрано'}</Text>
               </Paper>
             </Stack>
           </Card>
@@ -307,7 +343,16 @@ function BookingPage() {
             <Text c="dimmed" mb="md">
               {dayjs(selectedMonth).locale('ru').format('MMMM YYYY')}
             </Text>
-            <CalendarGrid month={selectedMonth} selectedDate={selectedDate} onSelectDate={setSelectedDate} onMonthChange={setSelectedMonth} slots={availableSlots} />
+            <CalendarGrid
+              month={selectedMonth}
+              selectedDate={selectedDate}
+              onSelectDate={(date) => {
+                setSelectedDate(date);
+                setSelectedSlotId('');
+              }}
+              onMonthChange={setSelectedMonth}
+              slots={availableSlots}
+            />
           </Card>
         </Grid.Col>
 
@@ -317,35 +362,51 @@ function BookingPage() {
               Статус слотов
             </Title>
             <Stack gap="sm" mah={520} style={{ overflow: 'auto' }}>
-              {(visibleSlots.length ? visibleSlots : availableSlots).map((slot, index) => {
-                const booked = index < 3;
-                return (
-                  <Paper
-                    key={slot.id}
-                    withBorder
-                    radius="lg"
-                    p="md"
-                    bg={booked ? 'gray.0' : selectedSlotId === slot.id ? 'blue.0' : 'white'}
-                    onClick={() => !booked && setSelectedSlotId(slot.id)}
-                    style={{ cursor: booked ? 'default' : 'pointer' }}
-                  >
-                    <Group justify="space-between">
-                      <Text fw={500}>{formatRange(slot)}</Text>
-                      <Badge variant={booked ? 'filled' : 'light'} color={booked ? 'gray' : 'green'}>
-                        {booked ? 'Занято' : 'Свободно'}
-                      </Badge>
-                    </Group>
-                  </Paper>
-                );
-              })}
+              {slotsForSelectedDate.length ? (
+                slotsForSelectedDate.map((slot) => {
+                  const booked = bookedSlotIds.includes(slot.id);
+                  return (
+                    <Paper
+                      key={slot.id}
+                      withBorder
+                      radius="lg"
+                      p="md"
+                      bg={booked ? 'gray.0' : selectedSlotId === slot.id ? 'blue.0' : 'white'}
+                      onClick={() => !booked && setSelectedSlotId(slot.id)}
+                      style={{ cursor: booked ? 'default' : 'pointer' }}
+                    >
+                      <Group justify="space-between">
+                        <Text fw={500}>{formatRange(slot)}</Text>
+                        <Badge variant={booked ? 'filled' : 'light'} color={booked ? 'gray' : 'green'}>
+                          {booked ? 'Занято' : 'Свободно'}
+                        </Badge>
+                      </Group>
+                    </Paper>
+                  );
+                })
+              ) : (
+                <Text c="dimmed">На выбранную дату нет свободных слотов.</Text>
+              )}
             </Stack>
 
             <Group mt="lg" grow>
               <Button variant="default" component={Link} to="/">
                 Назад
               </Button>
-              <Button disabled={!selectedSlotId}>Продолжить</Button>
+              <Button disabled={!selectedSlotId || loading} onClick={handleContinue} loading={loading}>
+                Продолжить
+              </Button>
             </Group>
+            {error ? (
+              <Text c="red" fz="sm" mt="sm">
+                {error}
+              </Text>
+            ) : null}
+            {success ? (
+              <Text c="green" fz="sm" mt="sm">
+                {success}
+              </Text>
+            ) : null}
           </Card>
         </Grid.Col>
       </Grid>
@@ -399,7 +460,7 @@ function AdminDashboard({ session, onLogout }: { session: AuthSession; onLogout:
   const [owner, setOwner] = useState<CalendarOwner>(mockOwner);
   const [eventTypes, setEventTypes] = useState<EventType[]>(mockEventTypes);
   const [bookings, setBookings] = useState<Booking[]>(mockBookings);
-  const [form, setForm] = useState<EventType>({ id: '', name: '', description: '', durationMinutes: 30 });
+  const [form, setForm] = useState({ name: '', description: '', durationMinutes: '30' });
   const [notice, setNotice] = useState<string | null>(null);
   useEffect(() => {
     let active = true;
@@ -458,27 +519,36 @@ function AdminDashboard({ session, onLogout }: { session: AuthSession; onLogout:
               <TextInput
                 label="Название"
                 value={form.name}
-                onChange={(event) => setForm((current) => ({ ...current, name: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const name = event.currentTarget.value;
+                  setForm((current) => ({ ...current, name }));
+                }}
               />
               <TextInput
                 label="Описание"
                 value={form.description}
-                onChange={(event) => setForm((current) => ({ ...current, description: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const description = event.currentTarget.value;
+                  setForm((current) => ({ ...current, description }));
+                }}
               />
               <TextInput
                 label="Длительность, минут"
                 type="number"
                 value={form.durationMinutes}
-                onChange={(event) => setForm((current) => ({ ...current, durationMinutes: Number(event.currentTarget.value) }))}
+                onChange={(event) => {
+                  const durationMinutes = event.currentTarget.value;
+                  setForm((current) => ({ ...current, durationMinutes }));
+                }}
               />
               {notice ? <Text c="green" fz="sm">{notice}</Text> : null}
               <Button
                 onClick={async () => {
                   const payload: EventType = {
-                    id: form.id || crypto.randomUUID(),
+                    id: crypto.randomUUID(),
                     name: form.name,
                     description: form.description,
-                    durationMinutes: form.durationMinutes,
+                    durationMinutes: Number(form.durationMinutes) || 1,
                   };
                   try {
                     const created = await api.ownerCreateEventType(payload);
